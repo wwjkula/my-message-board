@@ -1,11 +1,26 @@
+// /functions/api/messages.js
+
 // 引入 Neon 的 serverless 驱动
 import { Pool } from '@neondatabase/serverless';
 
-// 初始化数据库表 (如果不存在)
-// 这个函数只在第一次被调用时，或者表被意外删除时执行
+// 全局变量，用于缓存连接池实例
+let pool;
+
+function getPool(context) {
+  // 如果连接池还没有被创建，就创建一个新的
+  if (!pool) {
+    console.log("Creating new database connection pool.");
+    pool = new Pool({ connectionString: context.env.DATABASE_URL });
+  }
+  // 否则，返回已经存在的连接池
+  return pool;
+}
+
+// 初始化数据库表的函数保持不变
 async function initializeSchema(context) {
-    const pool = new Pool({ connectionString: context.env.DATABASE_URL });
-    const client = await pool.connect();
+    const dbPool = getPool(context);
+    const client = await dbPool.connect();
+    console.log("Initializing schema if not exists...");
     try {
         await client.query(`
             CREATE TABLE IF NOT EXISTS messages (
@@ -14,57 +29,70 @@ async function initializeSchema(context) {
                 timestamp TIMESTAMPTZ DEFAULT NOW()
             );
         `);
+        console.log("Schema initialization successful.");
+    } catch (e) {
+        console.error("CRITICAL ERROR during schema initialization!", e.message, e.stack);
+        // 如果建表失败，直接抛出异常，阻止后续操作
+        throw e; 
     } finally {
-        // 确保连接被释放回连接池
         client.release();
     }
 }
 
-
-// 处理 GET 请求 - 获取所有留言
+// 处理 GET 请求
 async function handleGet(context) {
-    // context.env.DATABASE_URL 是我们在 Cloudflare 后台设置的环境变量
-    const pool = new Pool({ connectionString: context.env.DATABASE_URL });
+    console.log("handleGet: Received a GET request.");
     try {
-        const { rows: messages } = await pool.query(
+        const dbPool = getPool(context);
+        console.log("handleGet: Attempting to query database.");
+        const { rows: messages } = await dbPool.query(
             'SELECT id, text, timestamp FROM messages ORDER BY timestamp DESC LIMIT 50;'
         );
+        console.log("handleGet: Database query successful.");
         return new Response(JSON.stringify(messages), {
             headers: { 'Content-Type': 'application/json' },
         });
     } catch (e) {
-        console.error(e);
-        return new Response('Error fetching messages', { status: 500 });
+        console.error("handleGet: CRITICAL ERROR fetching messages!", e.message, e.stack);
+        return new Response('Error fetching messages: ' + e.message, { status: 500 });
     }
-    // 注意：这里的 pool 不需要手动关闭，驱动会自动管理
 }
 
-// 处理 POST 请求 - 新增一条留言
+// 处理 POST 请求
 async function handlePost(context) {
-    const pool = new Pool({ connectionString: context.env.DATABASE_URL });
+    console.log("handlePost: Received a POST request.");
     try {
         const { text } = await context.request.json();
-        if (!text || typeof text !== 'string') {
+        if (!text || typeof text !== 'string' || text.trim() === '') {
             return new Response('Invalid "text" in request body', { status: 400 });
         }
         
-        await pool.query(
+        const dbPool = getPool(context);
+        await dbPool.query(
             'INSERT INTO messages (text) VALUES ($1);', 
-            [text] // 使用参数化查询防止 SQL 注入
+            [text.trim()]
         );
-        
+        console.log("handlePost: Message added successfully.");
         return new Response('Message added successfully', { status: 201 });
     } catch (e) {
-        console.error(e);
-        return new Response('Error adding message', { status: 500 });
+        console.error("handlePost: CRITICAL ERROR adding message!", e.message, e.stack);
+        return new Response('Error adding message: ' + e.message, { status: 500 });
     }
 }
 
-
 // Pages Functions 的主入口点
 export async function onRequest(context) {
-    // 确保数据库表已创建
-    await initializeSchema(context);
+    // 确保数据库表只在第一次调用时初始化
+    // 我们使用一个简单的技巧，通过全局变量来确保只执行一次
+    if (!globalThis.schemaInitialized) {
+        try {
+            await initializeSchema(context);
+            globalThis.schemaInitialized = true;
+        } catch (initError) {
+             // 如果初始化失败，后续所有请求都返回错误
+            return new Response('Database initialization failed. Please check logs.', { status: 500 });
+        }
+    }
 
     if (context.request.method === 'GET') {
         return await handleGet(context);
