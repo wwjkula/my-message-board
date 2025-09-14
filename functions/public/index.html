@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloudflare Message Board</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>我的留言板</h1>
+        <form id="message-form">
+            <input type="text" id="message-input" placeholder="说点什么..." required>
+            <button type="submit">提交</button>
+        </form>
+        <div id="messages-container">
+            <p>正在加载留言...</p>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('message-form');
+        const input = document.getElementById('message-input');
+        const messagesContainer = document.getElementById('messages-container');
+
+        // 1. 获取并显示所有留言
+        async function fetchMessages() {
+            try {
+                const response = await fetch('/api/messages');
+                const messages = await response.json();
+                
+                messagesContainer.innerHTML = ''; // 清空旧内容
+                if (messages.length === 0) {
+                    messagesContainer.innerHTML = '<p>还没有留言，快来抢沙发！</p>';
+                } else {
+                    messages.reverse().forEach(msg => { // reverse() 让最新的在最上面
+                        const p = document.createElement('p');
+                        p.textContent = `[${new Date(msg.timestamp).toLocaleString()}] ${msg.text}`;
+                        messagesContainer.appendChild(p);
+                    });
+                }
+            } catch (error) {
+                messagesContainer.innerHTML = '<p>加载失败，请刷新重试。</p>';
+                console.error('Error fetching messages:', error);
+            }
+        }
+
+        // 2. 提交新留言
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const text = input.value.trim();
+            if (!text) return;
+
+            try {
+                await fetch('/api/messages', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text })
+                });
+                input.value = ''; // 清空输入框
+                fetchMessages(); // 重新加载留言
+            } catch (error) {
+                alert('提交失败！');
+                console.error('Error posting message:', error);
+            }
+        });
+
+        // 页面加载时自动获取留言
+        fetchMessages();
+    </script>
+</body>
+</html>
